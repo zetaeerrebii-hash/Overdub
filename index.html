@@ -107,6 +107,11 @@ code{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--ochre)}
 .finfo{font-size:11.5px;padding:0 4px 3px;color:var(--sand);line-height:1.4}
 .lg{font-family:"JetBrains Mono",monospace;font-size:11px;padding:1px 5px;border-radius:5px;white-space:nowrap}
 .lg.add{background:#5fa39a;color:#0d1a18}.lg.rem{border:1px dashed #7a6a55;color:#a8957a;text-decoration:line-through}
+.ed{padding:6px}.edbar{display:flex;gap:6px;align-items:center;font-size:12px}.edbar b{color:var(--ochre)}.edinfo{flex:1;color:var(--muted);font-family:"JetBrains Mono",monospace;font-size:11px}
+.edbar select{width:auto;font-size:12px;padding:3px}.edbar button,.edrow button{padding:5px 10px;font-size:13px}
+.edc{width:100%;height:75px;display:block;margin:6px 0;border-radius:6px;touch-action:none;cursor:ew-resize}
+.edrow{display:flex;gap:5px;align-items:center;font-size:12px;color:var(--muted)}.edrow .sp{flex:1}
+.wv{cursor:pointer}
 </style>
 </head>
 <body>
@@ -146,9 +151,11 @@ code{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--ochre)}
 
   <section class="box" id="chords"><div class="meta" style="grid-column:1/-1;padding:18px;text-align:center">Gli accordi appaiono qui</div></section>
   <section class="trk" id="trk-chords"></section>
+  <section class="box ed" id="ed-chords" hidden></section>
   <section class="box" id="fret"><div class="fhead"><label>Posizione<select id="posSel"><option value="r">Varia</option><option value="0">Pos. 1</option><option value="1">Pos. 2</option><option value="2">Pos. 3</option><option value="3">Pos. 4</option><option value="4">Pos. 5</option><option value="homme">Guitar Moves</option></select></label><label>Solo<select id="leadSel"><option value="phrase">Frasi</option><option value="tech">Tecnica</option></select></label><button id="nameBtn" class="act">Gradi</button><button id="newLead" class="act">🎲 Frase</button></div><div class="finfo" id="fretInfo"></div><div id="fretSvg"></div><div class="cap" id="fretCap">anello giallo = note dell'accordo in corso</div></section>
   <section class="box tabbox"><div class="tabhead"><div class="cap" id="tabCap">tablatura del solo</div><div class="tv"><button data-v="live" class="on">Live</button><button data-v="page">Pagina</button></div></div><div id="tab"></div></section>
   <section class="trk" id="trk-scale"></section>
+  <section class="box ed" id="ed-scale" hidden></section>
 
   <details open><summary>Scala, accordi e ritmo</summary><div id="info"><p class="meta">Genera un esercizio con 🎲 Tutto.</p></div></details>
 
@@ -478,7 +485,6 @@ function start(o={}){
   halt();updateTone();
   const t0=ctx.currentTime+.15,beat=4*stepDur();let ls=t0;
   if(o.countIn){for(let i=0;i<4;i++){clickAt(t0+i*beat,i===0);const k=i;setTimeout(()=>setRecMsg(o.rec,'CONTO '+'● '.repeat(k+1)),(t0+i*beat-ctx.currentTime)*1000);}ls=t0+4*beat;}
-  for(const k in takes)if(takes[k])takes[k].off=0;
   nextT=ls;loopT0=ls;step=0;playing=true;timer=setInterval(tick,25);tick();
   $('play').textContent='■';$('play').classList.add('on');renderTracks();requestAnimationFrame(anim);
 }
@@ -799,7 +805,7 @@ async function enableMic(){
     src.connect(pr);pr.connect(z);z.connect(ctx.destination);
     pr.onaudioprocess=e=>{const t=e.playbackTime||ctx.currentTime;const d=e.inputBuffer.getChannelData(0);
       let pk=0;for(let i=0;i<d.length;i+=8)pk=Math.max(pk,Math.abs(d[i]));$('meterBar').style.width=Math.min(100,pk*140)+'%';
-      if(rec&&!rec.done&&t>rec.start-.6&&(rec.end==null||t<rec.end+1.2))rec.chunks.push({t,d:new Float32Array(d)});
+      if(rec&&!rec.done&&t>rec.start-16*stepDur()-.3&&(rec.end==null||t<rec.end+1.2))rec.chunks.push({t,d:new Float32Array(d)});
       if(cal&&t>cal.from&&t<cal.to)cal.chunks.push({t,d:new Float32Array(d)});};
     mic.proc=pr;mic.ok=true;
     if(!mic.calibrated){mic.lat=Math.min(.3,(ctx.baseLatency||.01)+(ctx.outputLatency||.03)+.02);$('lat').value=Math.round(mic.lat*1000);$('latv').textContent=$('lat').value;}
@@ -814,14 +820,21 @@ function assemble(chunks,start,dur,lat){
   chunks.forEach(c=>{const base=Math.round((c.t-lat-start)*sr);for(let i=0;i<c.d.length;i++){const j=base+i;if(j>=0&&j<Nn)out[j]=c.d[i];}});
   return out;
 }
-function toTake(arr,steps,meta){
-  let pk=0;for(let i=0;i<arr.length;i++)pk=Math.max(pk,Math.abs(arr[i]));const g=pk>.005?.85/pk:1;
-  const b=ctx.createBuffer(1,arr.length,ctx.sampleRate);const d=b.getChannelData(0);for(let i=0;i<arr.length;i++)d[i]=arr[i]*g;
-  const fz=Math.min(256,arr.length>>2);for(let i=0;i<fz;i++){d[i]*=i/fz;d[arr.length-1-i]*=i/fz;}
-  return {buf:b,steps,bpm,off:0,meta:meta?{key:meta.key,name:meta.tag}:null};
+function makeTake(raw,pre,absStart,steps,meta){
+  let pk=0;for(let i=0;i<raw.length;i++)pk=Math.max(pk,Math.abs(raw[i]));
+  const tk={raw,pre,ls:pre,absStart,steps,bpm,L:loop.len,g:pk>.005?.85/pk:1,meta:meta?{key:meta.key,name:meta.tag}:null};
+  bakeTake(tk);return tk;
 }
-function finishRec(){const r=rec;r.done=true;
-  takes[r.track]=toTake(assemble(r.chunks,r.start,r.steps*60/r.bpm/4,mic.lat),r.steps,r.meta);takes[r.track].off=r.startStep%r.steps;cfg[r.track].mute=false;rec=null;
+function bakeTake(tk){
+  const sr=ctx.sampleRate,sd=60/tk.bpm/4,a=Math.round(tk.ls*sr),n=Math.max(1,Math.round(tk.steps*sd*sr));
+  const b=ctx.createBuffer(1,n,sr),d=b.getChannelData(0);for(let i=0;i<n;i++)d[i]=(tk.raw[a+i]||0)*tk.g;
+  const fz=Math.min(256,n>>2);for(let i=0;i<fz;i++){d[i]*=i/fz;d[n-1-i]*=i/fz;}
+  tk.buf=b;const st=tk.absStart+Math.round((tk.ls-tk.pre)/sd);tk.off=((st%tk.L)+tk.L)%tk.L;
+}
+function finishRec(){const r=rec;r.done=true;const sd=60/r.bpm/4;
+  const first=r.chunks.length?r.chunks[0].t-mic.lat:r.start;const pre=Math.max(0,Math.min(16*sd,r.start-first));
+  const raw=assemble(r.chunks,r.start-pre,pre+r.steps*sd+.4,mic.lat);
+  takes[r.track]=makeTake(raw,pre,r.startStep,r.steps,r.meta);cfg[r.track].mute=false;rec=null;
   recMsgs[r.track]='';lockUI();if(r.track==='chords'&&mode==='solo')setMode('solo');renderTracks();}
 async function recordTrack(k){
   if(!loop)return;
@@ -840,9 +853,10 @@ async function importTrack(k,file){
   for(let c=0;c<ch;c++){const d=buf.getChannelData(c);for(let i=0;i<L;i++)mono[i]+=d[i]/ch;}
   let pk=0;for(let i=0;i<L;i++)pk=Math.max(pk,Math.abs(mono[i]));let s0=0;
   for(let i=0;i<L;i++)if(Math.abs(mono[i])>pk*.2){s0=Math.max(0,i-Math.round(.008*buf.sampleRate));break;}
-  const steps=recSteps(k),n=Math.round(steps*stepDur()*ctx.sampleRate),out=new Float32Array(n),ratio=buf.sampleRate/ctx.sampleRate;
+  const ratio=buf.sampleRate/ctx.sampleRate,sd=stepDur(),n=Math.min(Math.floor((L-s0)/ratio),Math.round(64*16*sd*ctx.sampleRate)),out=new Float32Array(n);
   for(let i=0;i<n;i++){const j=s0+Math.floor(i*ratio);if(j<L)out[i]=mono[j];}
-  takes[k]=toTake(out,steps,ex);cfg[k].mute=false;lockUI();if(k==='chords')setMode(mode);renderTracks();if(!playing)start();
+  const fileSteps=Math.floor(n/ctx.sampleRate/sd/16)*16,steps=Math.max(16,Math.min(recSteps(k),fileSteps||16));
+  takes[k]=makeTake(out,0,0,steps,ex);edK=k;cfg[k].mute=false;lockUI();if(k==='chords')setMode(mode);renderTracks();if(!playing)start();
 }
 function playTake(k,t){const tk=takes[k],c=cfg[k];const s=ctx.createBufferSource();s.buffer=tk.buf;const g=gain(c.vol);s.connect(g);g.connect(N.takes);
   const sh=c.shift/1000;if(sh>=0)s.start(t+sh);else s.start(t,-sh);activeSrc.push(s);s.onended=()=>{activeSrc=activeSrc.filter(x=>x!==s);};}
@@ -867,18 +881,69 @@ function drawWave(cv,tk){const w=cv.width=(cv.clientWidth||300)*2,h=cv.height=64
 function renderTracks(){
   for(const k of ['chords','scale']){const tk=takes[k],c=cfg[k],el=$('trk-'+k),isRec=rec&&rec.track===k;
     const name=k==='chords'?'REC ACCORDI':'REC SOLO';
-    const lbl=recMsgs[k]||(tk?`${name} · ${tk.steps/16} batt.${c.auto?' · altro esercizio':''}`:`${name} · premi ● per registrare`);
+    const lbl=recMsgs[k]||(tk?`${name} · ${lenTxt(tk)}${c.auto?' · altro esercizio':''} · ✎ tocca per inizio/fine`:`${name} · premi ● per registrare`);
     el.innerHTML=`<button class="rb ${isRec?'on':''}" title="Registra / chiudi il loop">${isRec?'■':'●'}</button>
       <div class="wv"><canvas></canvas><span class="lbl">${lbl}</span><i class="ph"></i></div>
       <button class="mb ${c.mute?'on2':''}" ${tk?'':'disabled'} title="Muto">M</button>
       <label class="ib" title="Importa un file audio">⤓<input type="file" accept="audio/*,video/*" hidden></label>
       <button class="db" ${tk?'':'disabled'} title="Cancella">✕</button>`;
     drawWave(el.querySelector('canvas'),tk);
+    if(tk)el.querySelector('.wv').onclick=()=>{edK=edK===k?null:k;renderEditors();};
     el.querySelector('.rb').onclick=()=>recordTrack(k);
     el.querySelector('input').onchange=e=>e.target.files[0]&&importTrack(k,e.target.files[0]);
     el.querySelector('.mb').onclick=()=>{c.mute=!c.mute;c.auto=false;if(k==='chords')setMode(mode);renderTracks();};
-    el.querySelector('.db').onclick=()=>{takes[k]=null;c.auto=false;lockUI();if(k==='chords')setMode(mode);renderTracks();};
+    el.querySelector('.db').onclick=()=>{takes[k]=null;if(edK===k)edK=null;c.auto=false;lockUI();if(k==='chords')setMode(mode);renderTracks();};
   }
+  renderEditors();
+}
+/* ---- editor del loop: inizio e fine sulla griglia ---- */
+let edK=null,edSnap=16;
+const lenTxt=tk=>{const B=Math.floor(tk.steps/16),b=Math.round((tk.steps%16)/4);return B&&b?`${B} batt. + ${b} batt.ti`:B?`${B} batt.`:`${b} battit${b===1?'o':'i'}`;};
+const posTxt=tk=>{const p=Math.round((tk.ls-tk.pre)/sdOf(tk));if(p<0)return `dal conteggio, battito ${4+Math.floor(p/4)+1}`;return `da batt. ${Math.floor(p/16)+1}, battito ${Math.floor((p%16)/4)+1}`;};
+function renderEditors(){
+  for(const k of ['chords','scale']){const el=$('ed-'+k),tk=takes[k];
+    if(edK!==k||!tk){el.hidden=true;el.innerHTML='';continue;}
+    el.hidden=false;
+    el.innerHTML=`<div class="edbar"><b>Loop ${k==='chords'?'accordi':'solo'}</b><span class="edinfo"></span>
+      <select class="snap"><option value="16">a battute</option><option value="4">a battiti</option></select><button class="edx">Fatto</button></div>
+      <canvas class="edc"></canvas>
+      <div class="edrow"><span>Inizio</span><button data-a="s-1">◀</button><button data-a="s1">▶</button>
+      <span class="sp"></span><span>Fine</span><button data-a="e-1">◀</button><button data-a="e1">▶</button></div>
+      <div class="note">Trascina le maniglie o usa le frecce. La parte chiara è quella che va in loop; le righe sono i battiti, quelle spesse le battute (la prima battuta registrata è numerata 1).</div>`;
+    el.querySelector('.snap').value=edSnap;
+    el.querySelector('.snap').onchange=e=>{edSnap=+e.target.value;};
+    el.querySelector('.edx').onclick=()=>{edK=null;renderEditors();};
+    el.querySelectorAll('.edrow button').forEach(b=>b.onclick=()=>{const a=b.dataset.a,dir=+a.slice(1),u=edSnap;
+      if(a[0]==='s'){const ns=tk.steps-dir*u;if(ns>=4&&tk.ls+dir*u*sdOf(tk)>=-1e-6&&tk.ls+dir*u*sdOf(tk)<rawDur(tk)){tk.ls+=dir*u*sdOf(tk);tk.steps=ns;}}
+      else{const ns=tk.steps+dir*u;if(ns>=4&&tk.ls+ns*sdOf(tk)<=rawDur(tk)+1e-6)tk.steps=ns;}
+      applyEd(k);});
+    const cv=el.querySelector('.edc');let drag=null;
+    const tAt=e=>{const r=cv.getBoundingClientRect();return Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*rawDur(tk);};
+    cv.onpointerdown=e=>{const t=tAt(e),a=tk.ls,b=tk.ls+tk.steps*sdOf(tk);drag=Math.abs(t-a)<Math.abs(t-b)?'s':'e';cv.setPointerCapture(e.pointerId);move(e);};
+    const move=e=>{if(!drag)return;const sd=sdOf(tk),u=edSnap*sd,t=tAt(e);let q=tk.pre+Math.round((t-tk.pre)/u)*u;
+      if(drag==='s'){while(q<-1e-6)q+=u;const end=tk.ls+tk.steps*sd;const ns=Math.round((end-q)/sd);if(ns>=4){tk.ls=q;tk.steps=ns;}}
+      else{const ns=Math.round((q-tk.ls)/sd);if(ns>=4&&tk.ls+ns*sd<=rawDur(tk)+1e-6)tk.steps=ns;}
+      drawEd(k);};
+    cv.onpointermove=move;cv.onpointerup=cv.onpointercancel=()=>{if(drag){drag=null;applyEd(k);}};
+    drawEd(k);
+  }
+}
+const sdOf=tk=>60/tk.bpm/4,rawDur=tk=>tk.raw.length/ctx.sampleRate;
+function applyEd(k){const tk=takes[k];bakeTake(tk);drawEd(k);const el=$('trk-'+k);drawWave(el.querySelector('canvas'),tk);
+  const l=el.querySelector('.lbl');if(l)l.textContent=`${k==='chords'?'REC ACCORDI':'REC SOLO'} · ${lenTxt(tk)} · ✎ tocca per inizio/fine`;}
+function drawEd(k){
+  const el=$('ed-'+k),tk=takes[k];if(!el||!tk)return;const cv=el.querySelector('.edc');
+  const w=cv.width=(cv.clientWidth||320)*2,h=cv.height=150,g=cv.getContext('2d'),D=rawDur(tk),sd=sdOf(tk),px=t=>t/D*w;
+  g.fillStyle='#0e0c0a';g.fillRect(0,0,w,h);
+  const a=tk.ls,b=tk.ls+tk.steps*sd;g.fillStyle='#2a1d14';g.fillRect(px(a),0,px(b)-px(a),h);
+  for(let i=-64;i<512;i++){const t=tk.pre+i*4*sd;if(t<0)continue;if(t>D)break;const bar=i%4===0;
+    g.fillStyle=bar?'#6b5c49':'#2e261f';g.fillRect(Math.round(px(t)),0,bar?2:1,h);
+    if(bar&&i>=0){g.fillStyle='#7a6a55';g.font='20px JetBrains Mono, monospace';g.fillText(String(i/4+1),px(t)+4,20);}}
+  const d=tk.raw,st=Math.max(1,Math.floor(d.length/w));
+  for(let x=0;x<w;x++){let pk=0;for(let i=x*st;i<(x+1)*st&&i<d.length;i+=4)pk=Math.max(pk,Math.abs(d[i]));const y=Math.min(1,pk*tk.g)*h*.42,t=x/w*D;
+    g.fillStyle=t>=a&&t<b?'#d0562b':'#5a3a2a';g.fillRect(x,h/2+6-y,1,Math.max(1,y*2));}
+  [[a,'#5fa39a'],[b,'#e0a83e']].forEach(([t,c])=>{const x=px(t);g.fillStyle=c;g.fillRect(x-2,0,4,h);g.beginPath();g.moveTo(x-12,h);g.lineTo(x+12,h);g.lineTo(x,h-18);g.fill();});
+  el.querySelector('.edinfo').textContent=`${lenTxt(tk)} · ${posTxt(tk)}`;
 }
 
 /* ================= UI ================= */
