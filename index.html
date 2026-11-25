@@ -155,7 +155,7 @@ code{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--ochre)}
   <details id="settings"><summary>Registrazione e mix</summary>
     <div class="set">
       <div class="row"><button id="micBtn">🎙 Microfono</button><div class="meter"><i id="meterBar"></i></div><button id="calib">Calibra</button></div>
-      <div class="note" id="micMsg">● avvia la registrazione dopo 4 click di conteggio. REC ACCORDI dura 4 battute, REC SOLO un giro intero del solo. Registra in cuffia. Su iPhone togli il silenzioso.</div>
+      <div class="note" id="micMsg">Come un looper: premi ● e suona (se è tutto fermo partono 4 click di conteggio, altrimenti la registrazione parte alla battuta successiva). Premi ■ quando hai finito: il pezzo viene chiuso alla battuta più vicina e va subito in loop, sopra la base. Registra in cuffia. Su iPhone togli il silenzioso.</div>
       <label>Latenza <b id="latv">60</b> ms<input type="range" id="lat" min="0" max="300" value="60"></label>
       <label>Sposta rec accordi <b id="shv-chords">0</b> ms<input type="range" id="sh-chords" min="-200" max="200" value="0"></label>
       <label>Sposta rec solo <b id="shv-scale">0</b> ms<input type="range" id="sh-scale" min="-200" max="200" value="0"></label>
@@ -465,30 +465,33 @@ function tick(){
     const t=nextT+(s%2===1?(swing-.5)*2*sd:0);
     loop.at[s].forEach(fn=>fn(t));
     for(const k of ['chords','scale']){const tk=takes[k];
-      if(tk&&!cfg[k].mute&&!(rec&&rec.track===k)&&step%tk.steps===0)playTake(k,nextT);}
+      if(tk&&!cfg[k].mute&&!(rec&&rec.track===k)&&((step-tk.off)%tk.steps+tk.steps)%tk.steps===0)playTake(k,nextT);}
     if(s%16===0){const bar=s/16;uiAt(nextT,()=>{onBar(bar);rec&&recProgress(bar);});}
     nextT+=sd;step++;
   }
-  if(rec&&!rec.done&&ctx.currentTime>rec.end+mic.lat+.4)finishRec();
+  if(rec&&!rec.done){const bd=16*stepDur();
+    if(rec.end==null&&ctx.currentTime-rec.start>32*bd)requestStopRec();
+    if(rec.end!=null&&ctx.currentTime>rec.end+mic.lat+.4)finishRec();}
 }
 function start(o={}){
   initAudio();ctx.resume&&ctx.resume();if(!loop)return;
   halt();updateTone();
   const t0=ctx.currentTime+.15,beat=4*stepDur();let ls=t0;
   if(o.countIn){for(let i=0;i<4;i++){clickAt(t0+i*beat,i===0);const k=i;setTimeout(()=>setRecMsg(o.rec,'CONTO '+'● '.repeat(k+1)),(t0+i*beat-ctx.currentTime)*1000);}ls=t0+4*beat;}
-  if(o.rec)rec={track:o.rec,start:ls,end:ls+recSteps(o.rec)*stepDur(),steps:recSteps(o.rec),bpm,meta:ex,chunks:[],done:false};
+  for(const k in takes)if(takes[k])takes[k].off=0;
   nextT=ls;loopT0=ls;step=0;playing=true;timer=setInterval(tick,25);tick();
   $('play').textContent='■';$('play').classList.add('on');renderTracks();requestAnimationFrame(anim);
 }
 function halt(){playing=false;clearInterval(timer);timer=null;activeSrc.forEach(s=>{try{s.stop();}catch(e){}});activeSrc=[];}
-function stop(){halt();if(rec&&!rec.done){rec=null;}
+function stop(){if(rec&&!rec.done){const bd=16*stepDur(),n=Math.floor((ctx.currentTime-rec.start)/bd);if(n>=1){rec.steps=n*16;rec.end=rec.start+n*bd;finishRec();}else{const k=rec.track;rec=null;recMsgs[k]='';}}halt();
   $('play').textContent='▶';$('play').classList.remove('on');document.querySelectorAll('.now,.hot,.ct').forEach(e=>e.classList.remove('now','hot','ct'));renderTracks();}
 const recSteps=k=>k==='chords'?64:loop.len;
 function anim(){
   if(!playing)return;const sd=stepDur();
   for(const k of ['chords','scale']){const el=document.querySelector('#trk-'+k+' .ph');if(!el)continue;
-    const steps=(rec&&rec.track===k)?rec.steps:(takes[k]?takes[k].steps:recSteps(k));
-    const el2=ctx.currentTime-loopT0;el.style.left=(el2<0?0:((el2/(steps*sd))%1)*100)+'%';}
+    if(rec&&rec.track===k){el.style.display='none';continue;}el.style.display='';
+    const tk=takes[k],steps=tk?tk.steps:recSteps(k),off=tk?tk.off:0;
+    const el2=(ctx.currentTime-loopT0)/sd-off;el.style.left=(el2<0?0:((el2/steps)%1)*100)+'%';}
   requestAnimationFrame(anim);
 }
 
@@ -779,7 +782,13 @@ let rec=null,cal=null;const mic={ok:false,lat:.06,stream:null};
 const locked=()=>!!(takes.chords||takes.scale);
 const recMsgs={chords:'',scale:''};
 function setRecMsg(k,t){if(!k)return;recMsgs[k]=t;const el=document.querySelector('#trk-'+k+' .lbl');if(el)el.textContent=t;}
-function recProgress(bar){if(rec&&!rec.done){const tot=rec.steps/16;if(bar<tot)setRecMsg(rec.track,`● REC  battuta ${bar+1}/${tot}`);}}
+function recProgress(bar){if(!rec||rec.done)return;const bd=16*stepDur(),el=ctx.currentTime-rec.start+.05;
+  if(rec.end!=null){setRecMsg(rec.track,`■ chiudo il loop: ${rec.steps/16} batt.`);return;}
+  if(el<0){setRecMsg(rec.track,'● parte alla prossima battuta…');return;}
+  setRecMsg(rec.track,`● REC batt. ${Math.floor(el/bd)+1} · premi ● per chiudere`);}
+function requestStopRec(){if(!rec||rec.done||rec.end!=null)return;const bd=16*stepDur(),el=ctx.currentTime-rec.start;
+  if(el<bd*.5&&el<0){const k=rec.track;rec=null;recMsgs[k]='';renderTracks();return;}
+  const n=Math.max(1,Math.round(el/bd));rec.steps=n*16;rec.end=rec.start+n*bd;recProgress(0);renderTracks();}
 async function enableMic(){
   initAudio();ctx.resume&&ctx.resume();if(mic.ok)return true;
   try{
@@ -790,7 +799,7 @@ async function enableMic(){
     src.connect(pr);pr.connect(z);z.connect(ctx.destination);
     pr.onaudioprocess=e=>{const t=e.playbackTime||ctx.currentTime;const d=e.inputBuffer.getChannelData(0);
       let pk=0;for(let i=0;i<d.length;i+=8)pk=Math.max(pk,Math.abs(d[i]));$('meterBar').style.width=Math.min(100,pk*140)+'%';
-      if(rec&&!rec.done&&t>rec.start-.6&&t<rec.end+1.2)rec.chunks.push({t,d:new Float32Array(d)});
+      if(rec&&!rec.done&&t>rec.start-.6&&(rec.end==null||t<rec.end+1.2))rec.chunks.push({t,d:new Float32Array(d)});
       if(cal&&t>cal.from&&t<cal.to)cal.chunks.push({t,d:new Float32Array(d)});};
     mic.proc=pr;mic.ok=true;
     if(!mic.calibrated){mic.lat=Math.min(.3,(ctx.baseLatency||.01)+(ctx.outputLatency||.03)+.02);$('lat').value=Math.round(mic.lat*1000);$('latv').textContent=$('lat').value;}
@@ -809,16 +818,20 @@ function toTake(arr,steps,meta){
   let pk=0;for(let i=0;i<arr.length;i++)pk=Math.max(pk,Math.abs(arr[i]));const g=pk>.005?.85/pk:1;
   const b=ctx.createBuffer(1,arr.length,ctx.sampleRate);const d=b.getChannelData(0);for(let i=0;i<arr.length;i++)d[i]=arr[i]*g;
   const fz=Math.min(256,arr.length>>2);for(let i=0;i<fz;i++){d[i]*=i/fz;d[arr.length-1-i]*=i/fz;}
-  return {buf:b,steps,bpm,meta:meta?{key:meta.key,name:meta.tag}:null};
+  return {buf:b,steps,bpm,off:0,meta:meta?{key:meta.key,name:meta.tag}:null};
 }
 function finishRec(){const r=rec;r.done=true;
-  takes[r.track]=toTake(assemble(r.chunks,r.start,r.steps*60/r.bpm/4,mic.lat),r.steps,r.meta);cfg[r.track].mute=false;rec=null;
+  takes[r.track]=toTake(assemble(r.chunks,r.start,r.steps*60/r.bpm/4,mic.lat),r.steps,r.meta);takes[r.track].off=r.startStep%r.steps;cfg[r.track].mute=false;rec=null;
   recMsgs[r.track]='';lockUI();if(r.track==='chords'&&mode==='solo')setMode('solo');renderTracks();}
 async function recordTrack(k){
-  if(!loop)return;if(rec&&!rec.done){stop();return;}
+  if(!loop)return;
+  if(rec&&!rec.done){if(rec.track===k)requestStopRec();return;}
   if(!(await enableMic()))return;
-  if(k==='scale')setMode('solo');
-  start({countIn:true,rec:k});
+  if(k==='scale'&&mode!=='solo')setMode('solo');
+  const meta=ex;
+  if(!playing){start({countIn:true,rec:k});rec={track:k,start:loopT0,startStep:0,end:null,steps:null,bpm,meta,chunks:[],done:false};}
+  else{const nb=Math.ceil(step/16)*16;rec={track:k,start:nextT+(nb-step)*stepDur(),startStep:nb,end:null,steps:null,bpm,meta,chunks:[],done:false};recProgress(0);}
+  renderTracks();
 }
 async function importTrack(k,file){
   if(!loop)return;initAudio();const ab=await file.arrayBuffer();let buf;
@@ -854,8 +867,8 @@ function drawWave(cv,tk){const w=cv.width=(cv.clientWidth||300)*2,h=cv.height=64
 function renderTracks(){
   for(const k of ['chords','scale']){const tk=takes[k],c=cfg[k],el=$('trk-'+k),isRec=rec&&rec.track===k;
     const name=k==='chords'?'REC ACCORDI':'REC SOLO';
-    const lbl=recMsgs[k]||(tk?`${name} · ${tk.steps/16} batt.${c.auto?' · altro esercizio':''}`:`${name} · vuota`);
-    el.innerHTML=`<button class="rb ${isRec?'on':''}" title="Registra">●</button>
+    const lbl=recMsgs[k]||(tk?`${name} · ${tk.steps/16} batt.${c.auto?' · altro esercizio':''}`:`${name} · premi ● per registrare`);
+    el.innerHTML=`<button class="rb ${isRec?'on':''}" title="Registra / chiudi il loop">${isRec?'■':'●'}</button>
       <div class="wv"><canvas></canvas><span class="lbl">${lbl}</span><i class="ph"></i></div>
       <button class="mb ${c.mute?'on2':''}" ${tk?'':'disabled'} title="Muto">M</button>
       <label class="ib" title="Importa un file audio">⤓<input type="file" accept="audio/*,video/*" hidden></label>
